@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Détecteur de Choc Audio</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --accent-color: #ff3e3e;
+            --text-color: #ffffff;
+            --subtext-color: #aaa;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .container {
+            background-color: var(--card-bg);
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 20px;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .metric {
+            margin: 15px 0;
+        }
+
+        .label {
+            font-size: 0.9rem;
+            color: var(--subtext-color);
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+
+        .indicator {
+            height: 12px;
+            width: 100%;
+            background-color: #333;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .bar {
+            height: 100%;
+            width: 0%;
+            background-color: var(--accent-color);
+            transition: width 0.1s ease-out;
+        }
+
+        .info {
+            font-size: 0.8rem;
+            color: var(--subtext-color);
+            margin-top: 20px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Détecteur de Choc</h1>
+
+    <button id="startBtn">Démarrer l'application</button>
+
+    <div class="metric">
+        <span class="label">Accélération instantanée</span>
+        <div class="value" id="accelVal">0.0 m/s²</div>
+        <div class="indicator">
+            <div class="bar" id="accelBar"></div>
+        </div>
+    </div>
+
+    <div class="metric">
+        <span class="label">Choc maximal mesuré</span>
+        <div class="value" id="maxVal" style="font-size: 1.4rem; color: #fff;">0.0 m/s²</div>
+    </div>
+
+    <p class="info" id="statusInfo">
+        Appuyez sur le bouton pour autoriser l'accès aux capteurs et à l'audio.
+    </p>
+</div>
+
+<script>
+    // Variables Audio
+    let audioCtx = null;
+
+    // Variables de détection
+    const SEUIL_CHOC = 12.0;    // Accélération min pour déclencher le son (m/s²)
+    const CHOC_MAX = 50.0;      // Accélération considérée comme "choc maximal"
+    const DUREE_SON = 0.25;     // Durée du son d'impact en secondes
+
+    let maxAccelRecorded = 0;
+    let isActive = false;
+
+    const startBtn = document.getElementById('startBtn');
+    const accelVal = document.getElementById('accelVal');
+    const maxVal = document.getElementById('maxVal');
+    const accelBar = document.getElementById('accelBar');
+    const statusInfo = document.getElementById('statusInfo');
+
+    startBtn.addEventListener('click', async () => {
+        // Initialiser l'AudioContext (requis sur clic utilisateur)
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        } else if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+
+        // Gestion de la permission sur iOS (DeviceMotionEvent.requestPermission)
+        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+            try {
+                const permissionState = await DeviceMotionEvent.requestPermission();
+                if (permissionState === 'granted') {
+                    activerCapteurs();
+                } else {
+                    statusInfo.textContent = "Permission refusée pour accéder à l'accéléromètre.";
+                }
+            } catch (error) {
+                console.error(error);
+                statusInfo.textContent = "Erreur lors de la demande de permission.";
+            }
+        } else {
+            // Pour Android et navigateurs standard
+            activerCapteurs();
+        }
+    });
+
+    function activerCapteurs() {
+        window.addEventListener('devicemotion', traiterMouvement);
+        isActive = true;
+        startBtn.disabled = true;
+        startBtn.textContent = "Capteur actif";
+        statusInfo.textContent = "Secouez votre appareil ou simulez un choc.";
+    }
+
+    function traiterMouvement(event) {
+        if (!isActive) return;
+
+        // Récupérer l'accélération avec gravité
+        const accel = event.accelerationIncludingGravity || event.acceleration;
+        if (!accel || accel.x === null) return;
+
+        // Calculer la norme du vecteur d'accélération |a| = sqrt(x² + y² + z²)
+        const totalAccel = Math.sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+
+        // Mise à jour de l'affichage
+        accelVal.textContent = totalAccel.toFixed(1) + " m/s²";
+        
+        // Barre visuelle (0 à 100%)
+        const pourcentage = Math.min(100, (totalAccel / CHOC_MAX) * 100);
+        accelBar.style.width = pourcentage + "%";
+
+        // Détection de choc
+        if (totalAccel > SEUIL_CHOC) {
+            if (totalAccel > maxAccelRecorded) {
+                maxAccelRecorded = totalAccel;
+                maxVal.textContent = maxAccelRecorded.toFixed(1) + " m/s²";
+            }
+
+            // Générer le son proportionnel à la force du choc
+            jouerSonChoc(totalAccel);
+        }
+    }
+
+    function jouerSonChoc(force) {
+        if (!audioCtx) return;
+
+        // Calcul du volume (gain) proportionnel au choc
+        // Normalisation entre 0.0 et 1.0 selon la force du choc
+        const ratioChoc = Math.min(1.0, (force - SEUIL_CHOC) / (CHOC_MAX - SEUIL_CHOC));
+        const volume = Math.max(0.1, ratioChoc); // Volume min 0.1, max 1.0
+
+        // Fréquence (plus le choc est fort, plus le son est percutant)
+        const frequence = 100 + (ratioChoc * 400); // Entre 100Hz et 500Hz
+
+        // Création des nœuds audio
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        // Onde en dents de scie pour un son sec/percutant
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(frequence, audioCtx.currentTime);
+        // Chute rapide de fréquence pour imiter un impact
+        osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + DUREE_SON);
+
+        // Configuration de l'enveloppe de volume (attaque rapide, décroissance)
+        gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + DUREE_SON);
+
+        // Connexion
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        // Démarrage et arrêt automatique
+        osc.start(audioCtx.currentTime);
+        osc.stop(audioCtx.currentTime + DUREE_SON);
+    }
+</script>
+
+</body>
+</html>
